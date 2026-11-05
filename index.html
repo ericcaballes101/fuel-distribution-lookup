@@ -220,12 +220,12 @@ function parseWorkbook(name,buf){
   const cFuel=col["pfc total fuel expense"]??need("fuel");
   const cMaint=col["maintenance cost"]??-1, cKm=col["km reading"]??-1, cVr=need("vr #");
   const cAcct=col["account"], cT=k=>col[k]??-1;
-  const rows=[];let other=0;
+  const rows=[];let other=0;const otherItems=[];
   for(let i=h+1;i<a.length;i++){
     const r=a[i]||[];
     const acct=tag(r[cAcct]);
     if(!acct){ // totals area
-      if(r.some(c=>typeof c==="string"&&/other po\/cash/i.test(c)))other+=toNum(r[cFuel]);
+      {const lab=r.find(c=>typeof c==="string"&&/other po\/cash/i.test(c));if(lab){const amt=toNum(r[cFuel]);other+=amt;otherItems.push({label:lab.replace(/^\s*total\s+other\s+po\/cash\s*/i,"").trim()||"Other PO/Cash",amount:amt})}}
       continue;
     }
     const fuel=toNum(r[cFuel]),maint=cMaint>=0?toNum(r[cMaint]):0;
@@ -240,7 +240,7 @@ function parseWorkbook(name,buf){
   const lab=`${MON[per.s[1]]} ${per.s[2]}${per.s[0]!==per.e[0]?", "+per.s[0]:""} – ${MON[per.e[1]]} ${per.e[2]}, ${per.e[0]}`;
   const warn=[];
   if(per.s[2]!==16||per.e[2]!==15)warn.push("Period does not run 16th → 15th.");
-  return {id:key,name,key,year:per.e[0],label:lab,short:MON[per.e[1]]+" "+per.e[0],rows,other,warn,uploaded:Date.now()};
+  return {id:key,name,key,year:per.e[0],label:lab,short:MON[per.e[1]]+" "+per.e[0],rows,other,otherItems,warn,uploaded:Date.now()};
 }
 
 /* ---------- upload / remove ---------- */
@@ -407,17 +407,20 @@ function tabsHtml(){
     <button class="tab" role="tab" data-tab="monthly" aria-selected="${state.tab==="monthly"}">Monthly</button>
     <button class="tab" role="tab" data-tab="annual" aria-selected="${state.tab==="annual"}">Annual</button></div>`;
 }
-function kpis(rows,extra){
+function otherOf(fs){
+  const m=new Map();let total=0;
+  fs.forEach(f=>{total+=f.other||0;(f.otherItems||[]).forEach(i=>m.set(i.label,(m.get(i.label)||0)+i.amount))});
+  return {total,items:[...m].map(([label,amount])=>({label,amount}))};
+}
+function kpis(rows,extra,other){
   const fuel=sum(rows,"fuel"),maint=sum(rows,"maint"),km=sum(rows,"km");
-  const vrs=uniq(rows.flatMap(r=>r.vrs)).length;
-  const plates=uniq(rows.map(r=>r.plate).filter(Boolean)).length;
+  other=other||{total:0,items:[]};
   return `<div class="kpis">
    <div class="kpi"><div class="l">Fuel (PFC)</div><div class="v">${peso(fuel)}</div>${extra&&extra.fuel||""}</div>
    <div class="kpi"><div class="l">Maintenance Recovery</div><div class="v">${peso(maint)}</div></div>
    <div class="kpi"><div class="l">Total</div><div class="v">${peso(fuel+maint)}</div></div>
    <div class="kpi"><div class="l">KM reading</div><div class="v">${num(km)}</div><div class="s">${km?peso(fuel/km)+" fuel / km":"—"}</div></div>
-   <div class="kpi"><div class="l">VR numbers</div><div class="v">${num(vrs)}</div><div class="s">${rows.length} charge lines</div></div>
-   <div class="kpi"><div class="l">Vehicles</div><div class="v">${plates}</div><div class="s">with plate assigned</div></div></div>`;
+   <div class="kpi"><div class="l">Other PO / Cash purchase</div><div class="v">${peso(other.total)}</div><div class="s">${other.items.length?other.items.map(i=>esc(i.label)+" "+peso(i.amount)).join(" · "):"none this period"}</div></div></div>`;
 }
 const vrChips=v=>v.slice().sort().map(x=>`<button class="vr ${getVR(x)?"":"miss"}" data-vr="${esc(x)}" title="${getVR(x)?esc(J(getVR(x).req)+" → "+J(getVR(x).dest)+" · "+J(getVR(x).drivers)):"No VR record uploaded"}">${esc(x)}</button>`).join("");
 
@@ -494,16 +497,16 @@ function monthlyView(){
   }
   return tabsHtml()+`<select id="perSel" aria-label="Period">${files.map(x=>`<option value="${x.key}" ${x.key===f.key?"selected":""}>${esc(x.label)}</option>`).join("")}</select>
     <span class="spacer"></span><button class="btn primary" id="xl">Export Excel</button><button class="btn" onclick="print()">Print</button></div>`+
-  kpis(rows,{fuel:`<div class="s">Petron fleet card: ${peso(fleet)}</div>`})+repTabs()+body;
+  kpis(rows,{fuel:`<div class="s">Petron fleet card: ${peso(fleet)}</div>`},otherOf([f]))+repTabs()+body;
 }
 
 function annualView(){
-  const ys=years();if(!ys.includes(state.year))state.year=ys[0];
-  const fs=files.filter(x=>x.year===state.year).sort((a,b)=>a.key<b.key?-1:1);
+  const fs=files.slice().sort((a,b)=>a.key<b.key?-1:1);
+  const span=fs.length>1?fs[0].short+" – "+fs[fs.length-1].short:(fs[0]?fs[0].short:"");
   const rows=fs.flatMap(f=>f.rows.map(r=>({...r,_p:f.short})));
   const periods=fs.map(f=>f.short);
   const tot=sum(rows,"fuel")+sum(rows,"maint");curRows=rows;
-  scopeVR=buildVR(vrFiles.filter(x=>x.year===state.year));
+  scopeVR=buildVR(vrFiles);
   // chart
   const W=900,H=260,L=64,B=34,T=12,R=10;
   const mx=Math.max(...fs.map(f=>sum(f.rows,"fuel")+sum(f.rows,"maint")),1);
@@ -527,7 +530,7 @@ function annualView(){
    fs.map((f,i)=>{const t=sum(f.rows,"fuel")+sum(f.rows,"maint");const p=i?sum(fs[i-1].rows,"fuel")+sum(fs[i-1].rows,"maint"):null;
      const d=p?((t-p)/p*100):null;
      return `<tr><td>${esc(f.label)}</td><td>${peso(sum(f.rows,"fuel"))}</td><td>${peso(sum(f.rows,"maint"))}</td><td>${peso(t)}</td><td>${num(sum(f.rows,"km"))}</td><td>${uniq(f.rows.flatMap(r=>r.vrs)).length}</td><td>${d==null?"—":(d>=0?"▲ ":"▼ ")+Math.abs(d).toFixed(1)+"%"}</td></tr>`}).join("")+
-   `</tbody><tfoot><tr><td>Total ${state.year}</td><td>${peso(sum(rows,"fuel"))}</td><td>${peso(sum(rows,"maint"))}</td><td>${peso(tot)}</td><td>${num(sum(rows,"km"))}</td><td>${uniq(rows.flatMap(r=>r.vrs)).length}</td><td></td></tr></tfoot></table>`;
+   `</tbody><tfoot><tr><td>Total</td><td>${peso(sum(rows,"fuel"))}</td><td>${peso(sum(rows,"maint"))}</td><td>${peso(tot)}</td><td>${num(sum(rows,"km"))}</td><td>${uniq(rows.flatMap(r=>r.vrs)).length}</td><td></td></tr></tfoot></table>`;
 
   const matrix=(keyFn,title,isC,km)=>{
     const data=groupBy(rows.map(r=>({...r})),keyFn);
@@ -540,16 +543,16 @@ function annualView(){
     case "code":body=`<section class="card"><div class="bar" style="margin:0 0 4px"><div><h2>Charging codes across periods</h2><div class="hint" style="margin:0">One row per charging code, consolidated across vehicles · fuel + maintenance recovery per period. Hover the VR count for the VR numbers.</div></div><span class="spacer"></span>${groupSelect()}</div><div class="tw">${matrix(gk.key,gk.name,ccMode(state.group))}</div></section>`;break;
     case "vehicle":body=`<section class="card"><h2>Vehicles across periods</h2><div class="tw">${matrix(plateKey,"Vehicle (plate)",false,true)}</div></section>`;break;
     case "people":body=vrSummaries();break;
-    case "vr":body=vrSection(scopeVR.size?[1]:[],String(state.year));break;
+    case "vr":body=vrSection(scopeVR.size?[1]:[],span);break;
     case "lines":body=linesCard(rows,true);break;
-    default:body=`<section class="card"><h2>Total fuel &amp; maintenance recovery by period · ${state.year}</h2>
+    default:body=`<section class="card"><h2>Total fuel &amp; maintenance recovery by period · ${span}</h2>
      <div class="legend"><span><i style="background:var(--fuel)"></i>Fuel</span><span><i style="background:var(--maint)"></i>Maintenance Recovery</span></div>${svg}</section>
      <section class="card"><h2>Period summary</h2><div class="hint">Each period runs 16th → 15th.</div><div class="tw">${ptab}</div></section>`;
   }
-  return tabsHtml()+`<select id="yrSel" aria-label="Year">${ys.map(y=>`<option ${y===state.year?"selected":""}>${y}</option>`).join("")}</select>
-   <span class="sub">${fs.length} period${fs.length>1?"s":""} loaded · grouped by the year of the 15th cut-off date</span>
+  return tabsHtml()+`
+   <span class="sub">${fs.length} period${fs.length>1?"s":""} uploaded · all periods included</span>
    <span class="spacer"></span><button class="btn primary" id="xl">Export Excel</button><button class="btn" onclick="print()">Print</button></div>`+
-   kpis(rows)+repTabs()+body;
+   kpis(rows,null,otherOf(fs))+repTabs()+body;
 }
 function niceStep(x){const p=Math.pow(10,Math.floor(Math.log10(x||1)));const n=x/p;return (n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10)*p}
 function rr(x,y,w,h,r){ if(h<=0)return"";r=Math.min(r,h,w/2);
@@ -566,7 +569,6 @@ function render(){
   app.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{state.tab=b.dataset.tab;render()});
   app.querySelectorAll("[data-rep]").forEach(b=>b.onclick=()=>{state.rep=b.dataset.rep;render()});
   const ps=$("#perSel");if(ps)ps.onchange=e=>{state.period=e.target.value;render()};
-  const ys=$("#yrSel");if(ys)ys.onchange=e=>{state.year=+e.target.value;render()};
   const g=$("#grp");if(g)g.onchange=e=>{state.group=e.target.value;render()};
   const q=$("#q");if(q)q.oninput=e=>{state.q=e.target.value;const pos=e.target.selectionStart;
     const html=state.tab==="monthly"?monthlyView():annualView();
@@ -587,7 +589,7 @@ function render(){
 }
 function exportXlsx(){
   const monthly=state.tab==="monthly";
-  const fs=monthly?files.filter(x=>x.key===state.period):files.filter(x=>x.year===state.year).sort((a,b)=>a.key<b.key?-1:1);
+  const fs=monthly?files.filter(x=>x.key===state.period):files.slice().sort((a,b)=>a.key<b.key?-1:1);
   const periods=fs.map(f=>f.short),rows=curRows,annual=!monthly;
   const wb=XLSX.utils.book_new();const used=new Set();
   const add=(name,head,data,fmt)=>{
@@ -604,7 +606,7 @@ function exportXlsx(){
   // Summary
   const sh=["Period","Fuel (PFC)","Maintenance Recovery","Total","KM","VR numbers","Charge lines"];
   const sr=fs.map(f=>[f.label,sum(f.rows,"fuel"),sum(f.rows,"maint"),sum(f.rows,"fuel")+sum(f.rows,"maint"),sum(f.rows,"km"),uniq(f.rows.flatMap(r=>r.vrs)).length,f.rows.length]);
-  if(annual)sr.push(["Total "+state.year,sum(rows,"fuel"),sum(rows,"maint"),sum(rows,"fuel")+sum(rows,"maint"),sum(rows,"km"),uniq(rows.flatMap(r=>r.vrs)).length,rows.length]);
+  if(annual)sr.push(["Total",sum(rows,"fuel"),sum(rows,"maint"),sum(rows,"fuel")+sum(rows,"maint"),sum(rows,"km"),uniq(rows.flatMap(r=>r.vrs)).length,rows.length]);
   add("Summary",sh,sr,[null,M,M,M,K,K,K]);
   // grouped sheets
   const grp=(name,keyFn,lead,leadFn)=>{
@@ -639,7 +641,7 @@ function exportXlsx(){
   // all lines
   {const head=[...(annual?["Period"]:[]),...CC_H,"Plate","KM","Fuel","Maintenance Recovery","Total","VR numbers","Requestor","Destination","Driver"];
    add("All Charge Lines",head,rows.map(r=>{const i=vrInfo(r.vrs);return [...(annual?[r._p]:[]),...ccParts(r.code),r.plate,r.km,r.fuel,r.maint,r.fuel+r.maint,vrl(r.vrs),J(i.req),J(i.dest),J(i.drv)]}),fmtOf(head));}
-  XLSX.writeFile(wb,"WVDF-Fuel-Distribution-"+(monthly?state.period:state.year)+".xlsx");
+  XLSX.writeFile(wb,"WVDF-Fuel-Distribution-"+(monthly?state.period:"All-Periods")+".xlsx");
 }
 
 /* ---------- fit tables to width (no horizontal scrollbars) ---------- */

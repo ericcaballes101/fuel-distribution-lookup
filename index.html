@@ -416,7 +416,7 @@ function kpis(rows,extra,other){
   const fuel=sum(rows,"fuel"),maint=sum(rows,"maint"),km=sum(rows,"km");
   other=other||{total:0,items:[]};
   return `<div class="kpis">
-   <div class="kpi"><div class="l">Fuel (PFC)</div><div class="v">${peso(fuel)}</div>${extra&&extra.fuel||""}</div>
+   <div class="kpi"><div class="l">Fuel (PFC)</div><div class="v">${peso(fuel-other.total)}</div><div class="s">Fuel ${peso(fuel)} − Other PO/Cash ${peso(other.total)}</div></div>
    <div class="kpi"><div class="l">Maintenance Recovery</div><div class="v">${peso(maint)}</div></div>
    <div class="kpi"><div class="l">Total</div><div class="v">${peso(fuel+maint)}</div></div>
    <div class="kpi"><div class="l">KM reading</div><div class="v">${num(km)}</div><div class="s">${km?peso(fuel/km)+" fuel / km":"—"}</div></div>
@@ -497,7 +497,7 @@ function monthlyView(){
   }
   return tabsHtml()+`<select id="perSel" aria-label="Period">${files.map(x=>`<option value="${x.key}" ${x.key===f.key?"selected":""}>${esc(x.label)}</option>`).join("")}</select>
     <span class="spacer"></span><button class="btn primary" id="xl">Export Excel</button><button class="btn" onclick="print()">Print</button></div>`+
-  kpis(rows,{fuel:`<div class="s">Petron fleet card: ${peso(fleet)}</div>`},otherOf([f]))+repTabs()+body;
+  kpis(rows,null,otherOf([f]))+repTabs()+body;
 }
 
 function annualView(){
